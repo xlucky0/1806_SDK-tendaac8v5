@@ -120,8 +120,6 @@ jobs:
             perl \
             libthread-queue-perl
 
-          # Jangan gunakan --slave.
-          # gcc dan g++ didaftarkan sebagai alternative terpisah.
           sudo update-alternatives \
             --install /usr/bin/gcc gcc /usr/bin/gcc-12 120
 
@@ -161,14 +159,12 @@ jobs:
 
           mkdir -p dl
 
-          # Bersihkan hanya hasil sementara/host yang aman dihapus.
+          # Bersihkan hasil sementara / host yang aman untuk dihapus
           rm -rf tmp
           rm -rf staging_dir/host
 
-          # Hapus index feed lama agar tidak memakai metadata korup.
-          rm -f feeds/*.index
-          rm -f feeds/*.tmp
-          rm -rf feeds/packages.tmp
+          # FIX: .tmp bisa berupa file atau direktori di folder feeds
+          rm -rf feeds/*.index feeds/*.tmp feeds/packages.tmp
 
           if [[ -f feeds.conf.default ]]; then
             cp -f feeds.conf.default feeds.conf
@@ -237,7 +233,6 @@ jobs:
             make defconfig FORCE=1 V=s
             make download -j2 FORCE=1 V=s
 
-            # Hapus file download yang jelas-jelas tidak valid/kosong.
             find dl -type f -size -1024c -print -delete || true
 
             make -j2 FORCE=1 V=s
@@ -256,37 +251,28 @@ jobs:
 
           LOG="${GITHUB_WORKSPACE}/initial-build.log"
 
-          # Repair umum untuk build OpenWrt.
+          # Repair umum untuk build OpenWrt
           rm -rf tmp
           rm -rf staging_dir/host
           rm -rf build_dir/host
           rm -rf build_dir/target-*
-          rm -rf feeds/*.index
-          rm -rf feeds/*.tmp
-          rm -rf feeds/packages.tmp
+          rm -rf feeds/*.index feeds/*.tmp feeds/packages.tmp
 
           mkdir -p dl
 
-          # Buang arsip download yang terlalu kecil atau rusak.
           find dl -type f -size -1024c -print -delete || true
 
-          # Perbarui metadata feed dan konfigurasi.
           ./scripts/feeds update -a || true
           ./scripts/feeds install -a || true
 
           make distclean FORCE=1 || true
 
-          # Pulihkan konfigurasi utama setelah distclean.
           if [[ -f "${GITHUB_WORKSPACE}/.config" ]]; then
             cp -f "${GITHUB_WORKSPACE}/.config" .config
           fi
 
           make defconfig FORCE=1 V=s
 
-          # AI repair opsional.
-          #
-          # AI hanya digunakan untuk menganalisis log dan menghasilkan
-          # rekomendasi. Tidak menjalankan perintah arbitrary dari respons AI.
           if [[ -n "${OPENAI_API_KEY:-}" && -s "${LOG}" ]]; then
             python3 - "${LOG}" <<'PY'
           import json
