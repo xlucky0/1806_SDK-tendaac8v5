@@ -25,7 +25,7 @@ env:
 jobs:
   build:
     name: Build firmware
-    runs-on: ubuntu 18.04
+    runs-on: ubuntu 26.04
     timeout-minutes: 240
 
     steps:
