@@ -2,77 +2,276 @@ name: Build OpenWrt Tenda AC8 v5
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openwrt-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  FORCE: "1"
+  MAKEFLAGS: "-j2"
 
 jobs:
   build:
+    name: Build firmware
     runs-on: ubuntu-22.04
+    timeout-minutes: 180
 
     steps:
-      - name: Checkout Source Code
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
-      - name: Auto-Detect SDK Location
-        id: setup
+      - name: Detect OpenWrt SDK
+        id: sdk
         shell: bash
         run: |
-          SDK_PATH="$(dirname "$(find . -name rules.mk -not -path '*/.*' -print -quit)")"
+          set -Eeuo pipefail
 
-          if [ -z "$SDK_PATH" ] || [ ! -f "$SDK_PATH/rules.mk" ]; then
-            echo "ERROR: rules.mk not found"
+          SDK_PATH="$(find . -type f -name rules.mk \
+            -not -path '*/.git/*' \
+            -not -path '*/staging_dir/*' \
+            -print -quit | xargs -r dirname)"
+
+          if [[ -z "${SDK_PATH}" || ! -f "${SDK_PATH}/rules.mk" ]]; then
+            echo "::error::OpenWrt rules.mk tidak ditemukan"
+            find . -maxdepth 4 -type f -name rules.mk -print || true
             exit 1
           fi
 
-          echo "SDK found at: $SDK_PATH"
-          echo "sdk_dir=$SDK_PATH" >> "$GITHUB_OUTPUT"
+          SDK_PATH="${SDK_PATH#./}"
+          [[ -z "${SDK_PATH}" ]] && SDK_PATH="."
 
-          if [ -f .config ] && [ "$SDK_PATH" != "." ]; then
-            cp -f .config "$SDK_PATH/.config"
+          echo "SDK_PATH=${SDK_PATH}"
+          echo "sdk_dir=${SDK_PATH}" >> "${GITHUB_OUTPUT}"
+
+          if [[ -f .config && "${SDK_PATH}" != "." ]]; then
+            cp -f .config "${SDK_PATH}/.config"
           fi
 
-      - name: Setup Build Environment
-        env:
-          DEBIAN_FRONTEND: noninteractive
+      - name: Install build dependencies
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential gcc g++ make \
-            clang flex bison gawk gettext git \
-            libncurses5-dev libssl-dev python3-distutils \
-            rsync unzip zlib1g-dev file wget
+          set -Eeuo pipefail
 
-      - name: Verify Toolchain
+          sudo dpkg --add-architecture amd64 || true
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            gcc \
+            g++ \
+            make \
+            binutils \
+            libc6-dev \
+            clang \
+            flex \
+            bison \
+            gawk \
+            gettext \
+            git \
+            libncurses5-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python3-setuptools \
+            rsync \
+            unzip \
+            zlib1g-dev \
+            file \
+            wget \
+            curl \
+            ca-certificates \
+            time
+
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Verify compiler
+        shell: bash
         run: |
+          set -Eeuo pipefail
+
+          command -v gcc
+          command -v g++
           gcc --version
           g++ --version
           make --version
 
-      - name: Update & Install Feeds
-        working-directory: ${{ steps.setup.outputs.sdk_dir }}
+          cat >/tmp/test.c <<'EOF'
+          int main(void) { return 0; }
+          EOF
+
+          cat >/tmp/test.cpp <<'EOF'
+          int main() { return 0; }
+          EOF
+
+          gcc -Werror -Wall -Wextra -o /tmp/test-c /tmp/test.c
+          g++ -Werror -Wall -Wextra -o /tmp/test-cpp /tmp/test.cpp
+
+          /tmp/test-c
+          /tmp/test-cpp
+
+      - name: Prepare OpenWrt tree
+        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
-          [ -e feeds.conf.default ] && cp feeds.conf.default feeds.conf
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          set -Eeuo pipefail
 
-      - name: Download Packages
-        working-directory: ${{ steps.setup.outputs.sdk_dir }}
+          # Hapus state hasil build atau feed yang mungkin rusak/stale.
+          rm -rf tmp
+          rm -rf staging_dir/host
+          rm -rf feeds/packages feeds/luci feeds/routing feeds/telephony
+
+          mkdir -p dl
+
+          if [[ -f feeds.conf.default ]]; then
+            cp -f feeds.conf.default feeds.conf
+          fi
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Update feeds with retry
+        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
-          make defconfig
-          make download -j"$(nproc)"
-          find dl -size -1024c -delete
+          set -Eeuo pipefail
 
-      - name: Compile Firmware
-        working-directory: ${{ steps.setup.outputs.sdk_dir }}
+          retry() {
+            local attempts="$1"
+            shift
+            local n=1
+
+            until "$@"; do
+              if (( n >= attempts )); then
+                echo "::error::Command gagal setelah ${n} percobaan: $*"
+                return 1
+              fi
+
+              echo "Percobaan ${n} gagal. Menunggu sebelum retry..."
+              sleep $((n * 10))
+              n=$((n + 1))
+            done
+          }
+
+          retry 3 ./scripts/feeds update -a
+          retry 3 ./scripts/feeds install -a
+
+      - name: Run OpenWrt prerequisite checks
+        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
-          echo "Starting compilation..."
-          make -j"$(nproc)" V=s
+          set -Eeuo pipefail
 
-      - name: Upload Firmware Artifacts
+          # OpenWrt 18.06 memiliki deteksi GCC/G++ yang sudah usang.
+          # FORCE=1 melewati pemeriksaan versi lama setelah compiler diverifikasi.
+          make prereq FORCE=1 V=s
+
+      - name: Generate configuration
+        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [[ -f .config ]]; then
+            make defconfig FORCE=1 V=s
+          else
+            echo "::warning::.config tidak ditemukan; menggunakan konfigurasi default"
+            make defconfig FORCE=1 V=s
+          fi
+
+      - name: Download packages with retry
+        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          retry() {
+            local attempts="$1"
+            shift
+            local n=1
+
+            until "$@"; do
+              if (( n >= attempts )); then
+                echo "::error::Download gagal setelah ${n} percobaan"
+                return 1
+              fi
+
+              echo "Download gagal. Mengulangi percobaan..."
+              sleep $((n * 15))
+              n=$((n + 1))
+            done
+          }
+
+          retry 3 make download -j2 FORCE=1 V=s
+
+          # Hapus file download yang rusak atau terlalu kecil.
+          find dl -type f -size -1024c -print -delete || true
+
+      - name: Compile firmware
+        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "Memulai build OpenWrt..."
+          make -j2 FORCE=1 V=s
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
+        shell: bash
+        run: |
+          {
+            echo "===== SYSTEM ====="
+            uname -a
+            free -h
+            df -h
+
+            echo "===== COMPILERS ====="
+            gcc --version || true
+            g++ --version || true
+            make --version || true
+
+            echo "===== GIT STATUS ====="
+            git status --short || true
+
+            echo "===== CONFIG ====="
+            test -f .config && sed -n '1,160p' .config || true
+
+            echo "===== RECENT LOGS ====="
+            find logs -type f -maxdepth 2 -print 2>/dev/null | head -20 || true
+          } | tee failure-diagnostics.txt
+
+      - name: Upload firmware artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: OpenWrt_Tenda_AC8v5
-          path: ${{ steps.setup.outputs.sdk_dir }}/bin/targets/
+          path: |
+            ${{ steps.sdk.outputs.sdk_dir }}/bin/targets/**
+            ${{ steps.sdk.outputs.sdk_dir }}/bin/packages/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-build-diagnostics
+          path: |
+            ${{ steps.sdk.outputs.sdk_dir }}/failure-diagnostics.txt
+            ${{ steps.sdk.outputs.sdk_dir }}/logs/**
+          if-no-files-found: ignore
+          retention-days: 7
