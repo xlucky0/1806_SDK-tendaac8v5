@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - release2.0.0
 
 permissions:
   contents: read
@@ -37,88 +38,40 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          SDK_PATH="$(find . -type f -name rules.mk \
-            -not -path '*/.git/*' \
-            -not -path '*/staging_dir/*' \
-            -print -quit | xargs -r dirname)"
-
+          SDK_PATH="$(find . -type f -name rules.mk -not -path '*/.git/*' -not -path '*/staging_dir/*' -print -quit | xargs -r dirname)"
           if [[ -z "${SDK_PATH}" || ! -f "${SDK_PATH}/rules.mk" ]]; then
             echo "::error::OpenWrt rules.mk tidak ditemukan"
-            find . -maxdepth 4 -type f -name rules.mk -print || true
             exit 1
           fi
-
           SDK_PATH="${SDK_PATH#./}"
           [[ -z "${SDK_PATH}" ]] && SDK_PATH="."
-
-          echo "SDK_PATH=${SDK_PATH}"
           echo "sdk_dir=${SDK_PATH}" >> "${GITHUB_OUTPUT}"
-
-          if [[ -f .config && "${SDK_PATH}" != "." ]]; then
-            cp -f .config "${SDK_PATH}/.config"
-          fi
+          if [[ -f .config && "${SDK_PATH}" != "." ]]; then cp -f .config "${SDK_PATH}/.config"; fi
 
       - name: Install build dependencies
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          sudo dpkg --add-architecture amd64 || true
           sudo apt-get update
-
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            gcc \
-            g++ \
-            make \
-            binutils \
-            libc6-dev \
-            clang \
-            flex \
-            bison \
-            gawk \
-            gettext \
-            git \
-            libncurses5-dev \
-            libncurses-dev \
-            libssl-dev \
-            python3 \
-            python3-setuptools \
-            rsync \
-            unzip \
-            zlib1g-dev \
-            file \
-            wget \
-            curl \
-            ca-certificates \
-            time
-
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
+            build-essential gcc-12 g++-12 gcc g++ make binutils libc6-dev \
+            flex bison gawk gettext git libncurses5-dev libncurses-dev \
+            libssl-dev python3 python3-setuptools rsync unzip zlib1g-dev \
+            file wget curl ca-certificates perl perl-modules-5.34 \
+            libthread-queue-perl
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-12
+          sudo update-alternatives --set gcc /usr/bin/gcc-12
+          sudo update-alternatives --set g++ /usr/bin/g++-12
 
       - name: Verify compiler
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          command -v gcc
-          command -v g++
           gcc --version
           g++ --version
-          make --version
-
-          cat >/tmp/test.c <<'EOF'
-          int main(void) { return 0; }
-          EOF
-
-          cat >/tmp/test.cpp <<'EOF'
-          int main() { return 0; }
-          EOF
-
-          gcc -Werror -Wall -Wextra -o /tmp/test-c /tmp/test.c
-          g++ -Werror -Wall -Wextra -o /tmp/test-cpp /tmp/test.cpp
-
+          printf 'int main(void){return 0;}\n' | gcc -x c -o /tmp/test-c -
+          printf 'int main(){return 0;}\n' | g++ -x c++ -o /tmp/test-cpp -
           /tmp/test-c
           /tmp/test-cpp
 
@@ -127,105 +80,40 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          # Hapus state hasil build atau feed yang mungkin rusak/stale.
-          rm -rf tmp
-          rm -rf staging_dir/host
+          rm -rf tmp staging_dir/host
           rm -rf feeds/packages feeds/luci feeds/routing feeds/telephony
-
+          rm -rf feeds/*.index feeds/*.tmp feeds/packages.tmp
           mkdir -p dl
-
-          if [[ -f feeds.conf.default ]]; then
-            cp -f feeds.conf.default feeds.conf
-          fi
-
+          if [[ -f feeds.conf.default ]]; then cp -f feeds.conf.default feeds.conf; fi
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Update feeds with retry
+      - name: Update feeds
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
           set -Eeuo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-          retry() {
-            local attempts="$1"
-            shift
-            local n=1
-
-            until "$@"; do
-              if (( n >= attempts )); then
-                echo "::error::Command gagal setelah ${n} percobaan: $*"
-                return 1
-              fi
-
-              echo "Percobaan ${n} gagal. Menunggu sebelum retry..."
-              sleep $((n * 10))
-              n=$((n + 1))
-            done
+      - name: Check target configuration
+        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          grep -q '^CONFIG_TARGET_siflower_sf19a2890_DEVICE_tenda_ac8-v5=y$' .config || {
+            echo "::error::Target Tenda AC8 v5 tidak ditemukan di .config"; exit 1;
           }
 
-          retry 3 ./scripts/feeds update -a
-          retry 3 ./scripts/feeds install -a
-
-      - name: Run OpenWrt prerequisite checks
+      - name: Build firmware
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          # OpenWrt 18.06 memiliki deteksi GCC/G++ yang sudah usang.
-          # FORCE=1 melewati pemeriksaan versi lama setelah compiler diverifikasi.
           make prereq FORCE=1 V=s
-
-      - name: Generate configuration
-        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          if [[ -f .config ]]; then
-            make defconfig FORCE=1 V=s
-          else
-            echo "::warning::.config tidak ditemukan; menggunakan konfigurasi default"
-            make defconfig FORCE=1 V=s
-          fi
-
-      - name: Download packages with retry
-        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          retry() {
-            local attempts="$1"
-            shift
-            local n=1
-
-            until "$@"; do
-              if (( n >= attempts )); then
-                echo "::error::Download gagal setelah ${n} percobaan"
-                return 1
-              fi
-
-              echo "Download gagal. Mengulangi percobaan..."
-              sleep $((n * 15))
-              n=$((n + 1))
-            done
-          }
-
-          retry 3 make download -j2 FORCE=1 V=s
-
-          # Hapus file download yang rusak atau terlalu kecil.
+          make defconfig FORCE=1 V=s
+          make download -j2 FORCE=1 V=s
           find dl -type f -size -1024c -print -delete || true
-
-      - name: Compile firmware
-        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          echo "Memulai build OpenWrt..."
           make -j2 FORCE=1 V=s
 
       - name: Collect diagnostics on failure
@@ -234,24 +122,10 @@ jobs:
         shell: bash
         run: |
           {
-            echo "===== SYSTEM ====="
-            uname -a
-            free -h
-            df -h
-
-            echo "===== COMPILERS ====="
-            gcc --version || true
-            g++ --version || true
-            make --version || true
-
-            echo "===== GIT STATUS ====="
+            uname -a; free -h; df -h
+            gcc --version || true; g++ --version || true
             git status --short || true
-
-            echo "===== CONFIG ====="
             test -f .config && sed -n '1,160p' .config || true
-
-            echo "===== RECENT LOGS ====="
-            find logs -type f -maxdepth 2 -print 2>/dev/null | head -20 || true
           } | tee failure-diagnostics.txt
 
       - name: Upload firmware artifacts
@@ -272,6 +146,5 @@ jobs:
           name: OpenWrt-build-diagnostics
           path: |
             ${{ steps.sdk.outputs.sdk_dir }}/failure-diagnostics.txt
-            ${{ steps.sdk.outputs.sdk_dir }}/logs/**
           if-no-files-found: ignore
           retention-days: 7
