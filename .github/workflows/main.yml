@@ -5,61 +5,74 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04
 
     steps:
-    - name: Checkout Source Code
-      uses: actions/checkout@v4
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Auto-Detect SDK Location
-      id: setup
-      run: |
-        # Cari lokasi pasti berkas inti rules.mk milik SDK
-        SDK_PATH=$(dirname $(find . -name "rules.mk" -not -path "*/.*" | head -n 1))
-        if [ -z "$SDK_PATH" ]; then
-          echo "ERROR: Berkas rules.mk tidak ditemukan!"
-          exit 1
-        fi
-        echo "SDK ditemukan di direktori: $SDK_PATH"
-        echo "sdk_dir=$SDK_PATH" >> $GITHUB_OUTPUT
+      - name: Auto-Detect SDK Location
+        id: setup
+        shell: bash
+        run: |
+          SDK_PATH="$(dirname "$(find . -name rules.mk -not -path '*/.*' -print -quit)")"
 
-        # Salin file .config jika ada di root repo ke direktori SDK
-        if [ -f .config ] && [ "$SDK_PATH" != "." ]; then
-          cp -f .config "$SDK_PATH/.config"
-        fi
+          if [ -z "$SDK_PATH" ] || [ ! -f "$SDK_PATH/rules.mk" ]; then
+            echo "ERROR: rules.mk not found"
+            exit 1
+          fi
 
-    - name: Setup Build Environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo -E apt-get -qq update
-        sudo -E apt-get -qq install -y build-essential clang flex bison gawk gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget
-        sudo -E apt-get -qq autoremove --purge
-        sudo -E apt-get -qq clean
+          echo "SDK found at: $SDK_PATH"
+          echo "sdk_dir=$SDK_PATH" >> "$GITHUB_OUTPUT"
 
-    - name: Update & Install Feeds
-      working-directory: ${{ steps.setup.outputs.sdk_dir }}
-      run: |
-        [ -e feeds.conf.default ] && cp feeds.conf.default feeds.conf
-        ./scripts/feeds update -a || true
-        ./scripts/feeds install -a || true
+          if [ -f .config ] && [ "$SDK_PATH" != "." ]; then
+            cp -f .config "$SDK_PATH/.config"
+          fi
 
-    - name: Download Packages
-      working-directory: ${{ steps.setup.outputs.sdk_dir }}
-      run: |
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec rm -f {} \;
+      - name: Setup Build Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential gcc g++ make \
+            clang flex bison gawk gettext git \
+            libncurses5-dev libssl-dev python3-distutils \
+            rsync unzip zlib1g-dev file wget
 
-    - name: Compile Firmware
-      working-directory: ${{ steps.setup.outputs.sdk_dir }}
-      run: |
-        echo "Memulai kompilasi..."
-        make -j$(nproc) || make -j1 V=s
+      - name: Verify Toolchain
+        run: |
+          gcc --version
+          g++ --version
+          make --version
 
-    - name: Upload Firmware Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: OpenWrt_Tenda_AC8v5
-        path: ${{ steps.setup.outputs.sdk_dir }}/bin/targets/
+      - name: Update & Install Feeds
+        working-directory: ${{ steps.setup.outputs.sdk_dir }}
+        shell: bash
+        run: |
+          [ -e feeds.conf.default ] && cp feeds.conf.default feeds.conf
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Download Packages
+        working-directory: ${{ steps.setup.outputs.sdk_dir }}
+        shell: bash
+        run: |
+          make defconfig
+          make download -j"$(nproc)"
+          find dl -size -1024c -delete
+
+      - name: Compile Firmware
+        working-directory: ${{ steps.setup.outputs.sdk_dir }}
+        shell: bash
+        run: |
+          echo "Starting compilation..."
+          make -j"$(nproc)" V=s
+
+      - name: Upload Firmware Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_Tenda_AC8v5
+          path: ${{ steps.setup.outputs.sdk_dir }}/bin/targets/
