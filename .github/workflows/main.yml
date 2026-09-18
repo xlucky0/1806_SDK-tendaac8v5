@@ -19,8 +19,8 @@ env:
   DEBIAN_FRONTEND: noninteractive
   FORCE: "1"
   MAKEFLAGS: "-j2"
-  CC: /usr/bin/gcc-12
-  CXX: /usr/bin/g++-12
+  CC: gcc
+  CXX: g++
 
 jobs:
   build:
@@ -47,8 +47,8 @@ jobs:
               -name rules.mk \
               -not -path '*/.git/*' \
               -not -path '*/staging_dir/*' \
-              -print -quit |
-            xargs -r dirname
+              -print -quit \
+            | xargs -r dirname
           )"
 
           if [[ -z "${SDK_PATH}" || ! -f "${SDK_PATH}/rules.mk" ]]; then
@@ -59,7 +59,6 @@ jobs:
 
           SDK_PATH="${SDK_PATH#./}"
           [[ -n "${SDK_PATH}" ]] || SDK_PATH="."
-
           echo "sdk_dir=${SDK_PATH}" >> "${GITHUB_OUTPUT}"
           echo "OpenWrt SDK: ${SDK_PATH}"
 
@@ -72,65 +71,29 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          retry() {
-            local attempts="$1"
-            local delay="$2"
-            shift 2
-
-            local n=1
-            until "$@"; do
-              if (( n >= attempts )); then
-                echo "::error::Command gagal setelah ${attempts} percobaan: $*"
-                return 1
-              fi
-
-              echo "Percobaan ${n} gagal. Ulangi dalam ${delay} detik..."
-              sleep "${delay}"
-              n=$((n + 1))
-            done
-          }
-
-          retry 5 10 sudo apt-get update
-
-          retry 5 10 sudo apt-get install -y --no-install-recommends \
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
             build-essential \
-            gcc-12 \
-            g++-12 \
+            gcc-12 g++-12 \
             make \
             binutils \
             libc6-dev \
-            flex \
-            bison \
-            gawk \
-            gettext \
+            flex bison \
+            gawk gettext \
             git \
-            libncurses5-dev \
-            libncurses-dev \
+            libncurses5-dev libncurses-dev \
             libssl-dev \
-            python3 \
-            python3-setuptools \
-            rsync \
-            unzip \
-            zip \
+            python3 python3-setuptools \
+            rsync unzip zip \
             zlib1g-dev \
-            file \
-            wget \
-            curl \
-            ca-certificates \
-            perl \
-            libthread-queue-perl
+            file wget curl ca-certificates \
+            perl libthread-queue-perl
 
-          sudo update-alternatives \
-            --install /usr/bin/gcc gcc /usr/bin/gcc-12 120
-
-          sudo update-alternatives \
-            --install /usr/bin/g++ g++ /usr/bin/g++-12 120
-
-          sudo update-alternatives \
-            --set gcc /usr/bin/gcc-12
-
-          sudo update-alternatives \
-            --set g++ /usr/bin/g++-12
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 120
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 120
+          sudo update-alternatives --set gcc /usr/bin/gcc-12
+          sudo update-alternatives --set g++ /usr/bin/g++-12
+          hash -r
 
           command -v gcc
           command -v g++
@@ -141,13 +104,8 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          printf 'int main(void){return 0;}\n' |
-            gcc -x c -o /tmp/test-c -
-
-          printf 'int main(){return 0;}\n' |
-            g++ -x c++ -o /tmp/test-cpp -
-
+          printf 'int main(void){return 0;}\n' | gcc -x c -o /tmp/test-c -
+          printf 'int main(){return 0;}\n' | g++ -x c++ -o /tmp/test-cpp -
           /tmp/test-c
           /tmp/test-cpp
 
@@ -156,255 +114,60 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-
           mkdir -p dl
-
-          # Bersihkan hasil sementara / host yang aman untuk dihapus
-          rm -rf tmp
-          rm -rf staging_dir/host
-
-          # FIX: .tmp bisa berupa file atau direktori di folder feeds
+          rm -rf tmp staging_dir/host
           rm -rf feeds/*.index feeds/*.tmp feeds/packages.tmp
-
           if [[ -f feeds.conf.default ]]; then
             cp -f feeds.conf.default feeds.conf
           fi
-
           git config --global user.name "github-actions[bot]"
-          git config --global user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Update and install feeds
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          retry() {
-            local attempts="$1"
-            local delay="$2"
-            shift 2
-
-            local n=1
-            until "$@"; do
-              if (( n >= attempts )); then
-                return 1
-              fi
-
-              echo "Feed command gagal. Retry ${n}/${attempts}..."
-              sleep "${delay}"
-              n=$((n + 1))
-            done
-          }
-
-          retry 4 15 ./scripts/feeds update -a
-          retry 4 15 ./scripts/feeds install -a
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
       - name: Check target configuration
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
           set -Eeuo pipefail
-
           if [[ ! -f .config ]]; then
             echo "::error::.config tidak ditemukan"
             exit 1
           fi
 
-          if ! grep -q \
-            '^CONFIG_TARGET_siflower_sf19a2890_DEVICE_tenda_ac8-v5=y$' \
-            .config
-          then
+          grep -q '^CONFIG_TARGET_siflower_sf19a2890_DEVICE_tenda_ac8-v5=y$' .config || {
             echo "::error::Target Tenda AC8 v5 tidak ditemukan di .config"
-            grep -E 'CONFIG_TARGET|TENDA|AC8' .config || true
             exit 1
-          fi
+          }
 
-      - name: Initial OpenWrt preparation
-        id: initial_build
-        continue-on-error: true
+      - name: Build OpenWrt
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
-        run: |
-          set -o pipefail
-
-          {
-            make prereq FORCE=1 V=s
-            make defconfig FORCE=1 V=s
-            make download -j2 FORCE=1 V=s
-
-            find dl -type f -size -1024c -print -delete || true
-
-            make -j2 FORCE=1 V=s
-          } 2>&1 | tee "${GITHUB_WORKSPACE}/initial-build.log"
-
-      - name: Automatic OpenWrt repair
-        if: steps.initial_build.outcome == 'failure'
-        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
-        shell: bash
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -Eeuo pipefail
-
-          echo "::warning::Build pertama gagal. Menjalankan automatic repair."
-
-          LOG="${GITHUB_WORKSPACE}/initial-build.log"
-
-          # Repair umum untuk build OpenWrt
-          rm -rf tmp
-          rm -rf staging_dir/host
-          rm -rf build_dir/host
-          rm -rf build_dir/target-*
-          rm -rf feeds/*.index feeds/*.tmp feeds/packages.tmp
-
-          mkdir -p dl
-
-          find dl -type f -size -1024c -print -delete || true
-
-          ./scripts/feeds update -a || true
-          ./scripts/feeds install -a || true
-
-          make distclean FORCE=1 || true
-
-          if [[ -f "${GITHUB_WORKSPACE}/.config" ]]; then
-            cp -f "${GITHUB_WORKSPACE}/.config" .config
-          fi
-
+          make prereq FORCE=1 V=s
           make defconfig FORCE=1 V=s
-
-          if [[ -n "${OPENAI_API_KEY:-}" && -s "${LOG}" ]]; then
-            python3 - "${LOG}" <<'PY'
-          import json
-          import os
-          import sys
-          import urllib.request
-
-          log_path = sys.argv[1]
-
-          with open(log_path, "r", errors="replace") as f:
-              log = f.read()[-12000:]
-
-          prompt = """Analyze this OpenWrt GitHub Actions build failure.
-          Return only a short diagnosis and safe recommended actions.
-          Do not return shell commands, secrets, or destructive commands.
-
-          Build log:
-          """ + log
-
-          payload = {
-              "model": "gpt-4o-mini",
-              "input": prompt,
-              "max_output_tokens": 700,
-          }
-
-          request = urllib.request.Request(
-              "https://api.openai.com/v1/responses",
-              data=json.dumps(payload).encode(),
-              headers={
-                  "Authorization": "Bearer " + os.environ["OPENAI_API_KEY"],
-                  "Content-Type": "application/json",
-              },
-              method="POST",
-          )
-
-          try:
-              with urllib.request.urlopen(request, timeout=60) as response:
-                  data = json.load(response)
-
-              text = data.get("output_text", "")
-              if text:
-                  print("===== AI DIAGNOSIS =====")
-                  print(text[:6000])
-                  print("===== END AI DIAGNOSIS =====")
-          except Exception as error:
-              print(f"AI diagnosis dilewati: {error}")
-          PY
-          else
-            echo "OPENAI_API_KEY tidak diset; memakai repair bawaan."
-          fi
-
-      - name: Retry OpenWrt build after repair
-        if: steps.initial_build.outcome == 'failure'
-        id: repaired_build
-        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          retry() {
-            local attempts="$1"
-            local delay="$2"
-            shift 2
-
-            local n=1
-            until "$@"; do
-              if (( n >= attempts )); then
-                echo "::error::Build gagal setelah ${attempts} percobaan."
-                return 1
-              fi
-
-              echo "Build gagal. Retry ${n}/${attempts}..."
-              sleep "${delay}"
-              n=$((n + 1))
-            done
-          }
-
-          retry 2 20 make prereq FORCE=1 V=s
-          retry 2 20 make defconfig FORCE=1 V=s
-          retry 3 20 make download -j2 FORCE=1 V=s
-
+          make download -j2 FORCE=1 V=s
           find dl -type f -size -1024c -print -delete || true
-
-          retry 2 30 make -j2 FORCE=1 V=s
+          make -j2 FORCE=1 V=s 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
 
       - name: Verify firmware output
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          TARGET_FILES="$(find bin/targets -type f 2>/dev/null | wc -l)"
-          PACKAGE_FILES="$(find bin/packages -type f 2>/dev/null | wc -l)"
-
-          echo "Target artifacts: ${TARGET_FILES}"
-          echo "Package artifacts: ${PACKAGE_FILES}"
-
-          if [[ "${TARGET_FILES}" -eq 0 ]]; then
+          target_files="$(find bin/targets -type f 2>/dev/null | wc -l)"
+          [[ "${target_files}" -gt 0 ]] || {
             echo "::error::Firmware tidak dihasilkan."
             exit 1
-          fi
-
+          }
           find bin/targets -type f -print
-
-      - name: Collect diagnostics on failure
-        if: failure()
-        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
-        shell: bash
-        run: |
-          {
-            echo "===== SYSTEM ====="
-            uname -a
-            free -h
-            df -h
-
-            echo "===== COMPILER ====="
-            gcc --version || true
-            g++ --version || true
-
-            echo "===== GIT STATUS ====="
-            git status --short || true
-
-            echo "===== CONFIG ====="
-            if [[ -f .config ]]; then
-              sed -n '1,220p' .config
-            fi
-
-            echo "===== BUILD LOG ====="
-            if [[ -f "${GITHUB_WORKSPACE}/initial-build.log" ]]; then
-              tail -n 300 "${GITHUB_WORKSPACE}/initial-build.log"
-            fi
-          } | tee failure-diagnostics.txt
 
       - name: Upload firmware artifacts
         if: success()
@@ -417,13 +180,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build diagnostics
+      - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt-build-diagnostics
-          path: |
-            initial-build.log
-            ${{ steps.sdk.outputs.sdk_dir }}/failure-diagnostics.txt
+          name: OpenWrt-build-log
+          path: build.log
           if-no-files-found: ignore
           retention-days: 7
