@@ -1,0 +1,30 @@
+# Target Hardware (Tenda AC8 v5)
+CONFIG_TARGET_siflower=y
+CONFIG_TARGET_siflower_sf19a2890=y
+CONFIG_TARGET_siflower_sf19a2890_DEVICE_tenda_ac8-v5=y
+
+# Core System & Switch (MT7530U)
+CONFIG_PACKAGE_base-files=y
+CONFIG_PACKAGE_busybox=y
+CONFIG_PACKAGE_dropbear=y
+CONFIG_PACKAGE_dnsmasq=y
+CONFIG_PACKAGE_swconfig=y
+CONFIG_PACKAGE_kmod-switch-mt7530=y
+CONFIG_PACKAGE_ppp=y
+CONFIG_PACKAGE_ppp-mod-pppoe=y
+
+# Wi-Fi Essentials
+CONFIG_PACKAGE_kmod-sf19a2890-wifi=y
+CONFIG_PACKAGE_wpad-mini=y
+
+# Minimal LuCI UI
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_luci-mod-admin-full=y
+CONFIG_PACKAGE_luci-theme-bootstrap=y
+
+# Fitur Pemangkasan Ukuran (Optimization Flags)
+CONFIG_STRIP_KERNEL_EXPORTS=y
+CONFIG_USE_STRIP=y
+# CONFIG_IPV6 is not set
+# CONFIG_PACKAGE_luci-app-firewall is not set
