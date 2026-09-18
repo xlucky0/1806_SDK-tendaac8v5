@@ -11,15 +11,21 @@ jobs:
     - name: Checkout Source Code
       uses: actions/checkout@v4
 
-    - name: Locate and Prepare SDK
+    - name: Auto-Detect SDK Location
+      id: setup
       run: |
-        if [ ! -f Makefile ]; then
-          SDK_DIR=$(dirname $(find . -maxdepth 3 -name "Makefile" -not -path "*/.*" | head -n 1))
-          if [ -n "$SDK_DIR" ] && [ "$SDK_DIR" != "." ]; then
-            echo "SDK ditemukan di sub-folder $SDK_DIR, memindahkan ke root..."
-            cp -rn $SDK_DIR/* . 2>/dev/null || true
-            cp -rn $SDK_DIR/.* . 2>/dev/null || true
-          fi
+        # Cari lokasi pasti berkas inti rules.mk milik SDK
+        SDK_PATH=$(dirname $(find . -name "rules.mk" -not -path "*/.*" | head -n 1))
+        if [ -z "$SDK_PATH" ]; then
+          echo "ERROR: Berkas rules.mk tidak ditemukan!"
+          exit 1
+        fi
+        echo "SDK ditemukan di direktori: $SDK_PATH"
+        echo "sdk_dir=$SDK_PATH" >> $GITHUB_OUTPUT
+
+        # Salin file .config jika ada di root repo ke direktori SDK
+        if [ -f .config ] && [ "$SDK_PATH" != "." ]; then
+          cp -f .config "$SDK_PATH/.config"
         fi
 
     - name: Setup Build Environment
@@ -33,18 +39,21 @@ jobs:
         sudo -E apt-get -qq clean
 
     - name: Update & Install Feeds
+      working-directory: ${{ steps.setup.outputs.sdk_dir }}
       run: |
         [ -e feeds.conf.default ] && cp feeds.conf.default feeds.conf
         ./scripts/feeds update -a || true
         ./scripts/feeds install -a || true
 
     - name: Download Packages
+      working-directory: ${{ steps.setup.outputs.sdk_dir }}
       run: |
         make defconfig
         make download -j8
         find dl -size -1024c -exec rm -f {} \;
 
     - name: Compile Firmware
+      working-directory: ${{ steps.setup.outputs.sdk_dir }}
       run: |
         echo "Memulai kompilasi..."
         make -j$(nproc) || make -j1 V=s
@@ -53,4 +62,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: OpenWrt_Tenda_AC8v5
-        path: bin/targets/
+        path: ${{ steps.setup.outputs.sdk_dir }}/bin/targets/
