@@ -8,8 +8,15 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout Source Code
+    - name: Checkout Workflow Code
       uses: actions/checkout@v4
+
+    - name: Clone Siflower SDK Source
+      run: |
+        # Download kode sumber SDK Siflower 18.06 langsung ke runner
+        git clone --depth 1 https://github.com/siflower/openwrt-18.06.git sdk_source
+        cp .config sdk_source/.config 2>/dev/null || true
+        mv sdk_source/* sdk_source/.* . 2>/dev/null || true
 
     - name: Setup Build Environment
       env:
