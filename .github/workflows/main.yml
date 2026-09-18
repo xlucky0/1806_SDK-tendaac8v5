@@ -11,6 +11,17 @@ jobs:
     - name: Checkout Source Code
       uses: actions/checkout@v4
 
+    - name: Locate and Prepare SDK
+      run: |
+        if [ ! -f Makefile ]; then
+          SDK_DIR=$(dirname $(find . -maxdepth 3 -name "Makefile" -not -path "*/.*" | head -n 1))
+          if [ -n "$SDK_DIR" ] && [ "$SDK_DIR" != "." ]; then
+            echo "SDK ditemukan di sub-folder $SDK_DIR, memindahkan ke root..."
+            cp -rn $SDK_DIR/* . 2>/dev/null || true
+            cp -rn $SDK_DIR/.* . 2>/dev/null || true
+          fi
+        fi
+
     - name: Setup Build Environment
       env:
         DEBIAN_FRONTEND: noninteractive
