@@ -114,8 +114,8 @@ jobs:
             diffutils \
             findutils \
             bash \
-            getopt \
-            stat
+            util-linux \
+            coreutils
 
           sudo update-alternatives \
             --install /usr/bin/gcc gcc /usr/bin/gcc-12 120
