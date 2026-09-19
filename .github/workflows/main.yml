@@ -36,11 +36,12 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Detect OpenWrt SDK
+      - name: Detect OpenWrt SDK root
         id: sdk
         shell: bash
         run: |
           set -Eeuo pipefail
+
           SDK_PATH="$(
             find . \
               -type f \
@@ -52,7 +53,7 @@ jobs:
           )"
 
           if [[ -z "${SDK_PATH}" || ! -f "${SDK_PATH}/rules.mk" ]]; then
-            echo "::error::OpenWrt rules.mk tidak ditemukan"
+            echo "::error::OpenWrt rules.mk not found"
             exit 1
           fi
 
@@ -68,25 +69,76 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential gcc-12 g++-12 make binutils libc6-dev \
-            flex bison gawk gettext git libncurses5-dev libncurses-dev \
-            libssl-dev python3 python3-setuptools rsync unzip zip \
-            zlib1g-dev file wget curl ca-certificates perl libthread-queue-perl
+            build-essential \
+            gcc \
+            g++ \
+            gcc-12 \
+            g++-12 \
+            make \
+            binutils \
+            libc6-dev \
+            flex \
+            bison \
+            gawk \
+            gettext \
+            git \
+            libncurses5-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            python3-setuptools \
+            rsync \
+            unzip \
+            zip \
+            zlib1g-dev \
+            file \
+            wget \
+            curl \
+            ca-certificates \
+            perl \
+            libthread-queue-perl
+
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 120
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 120
           sudo update-alternatives --set gcc /usr/bin/gcc-12
           sudo update-alternatives --set g++ /usr/bin/g++-12
+
+          make --version | head -n 1
+          gcc --version | head -n 1
+          g++ --version | head -n 1
+
+      - name: Diagnose compiler environment
+        working-directory: ${{ steps.sdk.outputs.sdk_dir }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          command -v make
+          command -v gcc
+          command -v g++
+
+          make --version | head -n 1
+          gcc --version | head -n 1
+          g++ --version | head -n 1
+
+          printf 'int main(void) { return 0; }\n' | gcc -x c -o /tmp/test-c -
+          printf 'int main(void) { return 0; }\n' | g++ -x c++ -o /tmp/test-cpp -
+          /tmp/test-c
+          /tmp/test-cpp
 
       - name: Prepare OpenWrt tree
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
           set -Eeuo pipefail
+
           mkdir -p dl
           rm -rf tmp staging_dir/host
           rm -rf feeds/*.index feeds/*.tmp feeds/packages.tmp
+
           if [[ -f feeds.conf.default ]]; then
             cp -f feeds.conf.default feeds.conf
           fi
@@ -104,44 +156,60 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          if [[ ! -f .config ]]; then
-            echo "::error::.config tidak ditemukan"
-            exit 1
-          fi
 
-          grep -q '^CONFIG_TARGET_siflower_sf19a2890_DEVICE_tenda_ac8-v5=y$' .config
+          [[ -f .config ]] || {
+            echo "::error::.config not found"
+            exit 1
+          }
+
+          grep -q '^CONFIG_TARGET_siflower=y$' .config
           grep -q '^CONFIG_TARGET_siflower_sf19a2890=y$' .config
+          grep -q '^CONFIG_TARGET_siflower_sf19a2890_DEVICE_tenda_ac8-v5=y$' .config
           grep -q '^CONFIG_PACKAGE_kmod-siflower-wifi=y$' .config
 
       - name: Build OpenWrt
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
+        env:
+          FORCE: "1"
         run: |
           set -Eeuo pipefail
-          make prereq FORCE=1 V=s
-          make defconfig FORCE=1 V=s
-          make download -j2 FORCE=1 V=s
+
+          export CC=gcc
+          export CXX=g++
+
+          make FORCE=1 prereq V=s
+          make FORCE=1 defconfig V=s
+          make FORCE=1 download -j2 V=s
           find dl -type f -size -1024c -print -delete || true
-          make -j2 FORCE=1 V=s 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
+
+          make FORCE=1 -j2 V=s 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
 
       - name: Validate firmware artifacts
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
           set -Eeuo pipefail
+
           mapfile -t files < <(find bin/targets -type f -size +0c -print)
           [[ "${#files[@]}" -gt 0 ]] || {
-            echo "::error::Firmware tidak dihasilkan"
+            echo "::error::No firmware artifact generated"
             exit 1
           }
 
           for file in "${files[@]}"; do
             size=$(stat -c '%s' "$file")
+
+            # Tenda AC8 v5 is 8 MiB NOR; firmware region starts at 0x80000.
+            # The build payload must fit before the reserved 0x7c0000 region.
             if [[ "$size" -gt $((0x740000)) ]]; then
-              echo "::error::$file exceeds the AC8 v5 firmware region"
+              echo "::error::$file exceeds AC8 v5 firmware region"
               exit 1
             fi
           done
+
+          echo "Artifacts generated:"
+          printf '%s\n' "${files[@]}"
 
       - name: Upload firmware artifacts
         if: success()
