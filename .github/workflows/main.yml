@@ -31,6 +31,7 @@ jobs:
 
       - name: Setup Configuration (.config)
         run: |
+          # Pastikan file .config dibuat di root folder SDK Anda
           cat << 'EOF' > .config
           CONFIG_TARGET_siflower=y
           CONFIG_TARGET_siflower_sf19a28=y
