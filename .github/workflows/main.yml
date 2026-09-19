@@ -31,7 +31,6 @@ jobs:
 
       - name: Setup Configuration (.config)
         run: |
-          # Masuk secara spesifik ke folder openwrt-18.06
           cd openwrt-18.06
 
           cat << 'EOF' > .config
@@ -43,12 +42,15 @@ jobs:
           CONFIG_PACKAGE_dnsmasq=y
           CONFIG_PACKAGE_wireless-tools=y
           EOF
-          make defconfig
+          
+          # Gunakan FORCE=1 agar cek prasyarat versi host yang usang dilewati
+          make defconfig FORCE=1
 
       - name: Start Compilation
         run: |
           cd openwrt-18.06
-          make -j$(nproc) || make -j1 V=s
+          # Tambahkan FORCE=1 untuk bypass error checking environment lama di OS baru
+          make -j$(nproc) FORCE=1 || make -j1 V=s FORCE=1
 
       - name: Upload Firmware Result
         uses: actions/upload-artifact@v4
