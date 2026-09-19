@@ -29,7 +29,7 @@ jobs:
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
           gcc --version
 
-      - name: Setup Configuration (.config)
+      - name: Setup Configuration & Defconfig
         run: |
           cd openwrt-18.06
 
@@ -43,13 +43,13 @@ jobs:
           CONFIG_PACKAGE_wireless-tools=y
           EOF
           
-          # Gunakan FORCE=1 agar cek prasyarat versi host yang usang dilewati
+          # Tambahkan FORCE=1 agar defconfig tidak abort karena versi host baru
           make defconfig FORCE=1
 
       - name: Start Compilation
         run: |
           cd openwrt-18.06
-          # Tambahkan FORCE=1 untuk bypass error checking environment lama di OS baru
+          # Jalankan make dengan FORCE=1 agar lolos tahap preparation
           make -j$(nproc) FORCE=1 || make -j1 V=s FORCE=1
 
       - name: Upload Firmware Result
