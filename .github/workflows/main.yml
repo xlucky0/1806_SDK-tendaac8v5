@@ -1,4 +1,4 @@
-name: Build Tenda AC8v5 OpenWrt (Ubuntu 18.04 Container)
+name: Build Tenda AC8v5 OpenWrt Siflower (Ubuntu 18.04 Container)
 
 on:
   workflow_dispatch:
@@ -13,11 +13,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    name: Compile OpenWrt 18.06 Firmware
+    name: Compile Siflower SF19A28 OpenWrt 18.06
 
-    # MENGATASI MASALAH GCC & GNU MAKE:
-    # Menggunakan container Ubuntu 18.04 resmi agar GCC (7.5) & GNU Make (4.1)
-    # 100% kompatibel dengan SDK OpenWrt 18.06 milik Tenda AC8v5
+    # SOLUSI 1 (Mengatasi error 'working-make', 'gcc', & 'g++' prerequisite):
+    # Siflower 1806_SDK secara resmi membutuhkan lingkungan Ubuntu 18.04 / 16.04.
+    # Container Ubuntu 18.04 membawa GCC 7.5 dan GNU Make 4.1 asli yang cocok 100%
+    # dengan chipset Siflower SF19A28 / SF19A2890 pada Tenda AC8v5.
     container:
       image: ubuntu:18.04
 
@@ -33,8 +34,8 @@ jobs:
             time bc subversion diffutils patch curl
           apt-get clean
 
-      # MENGATASI MASALAH "fatal: Invalid revision range ...":
-      # Wajib fetch-depth: 0 agar OpenWrt bisa membaca histori commit Git
+      # SOLUSI 2 (Mengatasi "fatal: Invalid revision range ..."):
+      # Wajib fetch-depth: 0 agar git mengunduh riwayat commit lengkap untuk kalkulasi versi OpenWrt
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
@@ -53,15 +54,15 @@ jobs:
             ./scripts/feeds install -a || true
           fi
 
-      - name: Prepare Build Configuration (.config)
+      - name: Prepare Siflower Build Configuration
         run: |
           cd openwrt-18.06
-          # Jika belum ada .config khusus, gunakan default config SDK Tenda
-          if [ ! -f ".config" ]; then
-            make defconfig
-          else
-            make defconfig
+          # Periksa apakah ada konfigurasi target defconfig Siflower SF19A28
+          if [ -f "target/linux/siflower/sf19a28_evb_fullmask_def.config" ] && [ ! -f ".config" ]; then
+            echo "Memuat defconfig Siflower SF19A28..."
+            cp -v target/linux/siflower/sf19a28_evb_fullmask_def.config .config || true
           fi
+          make defconfig || true
           # Aktifkan Web UI LuCI
           sed -i 's/^#\(.*src-git luci\)/\1/' feeds.conf.default || true
 
@@ -70,28 +71,38 @@ jobs:
           cd openwrt-18.06
           make download -j$(nproc) || make download -j1 V=s
 
-      - name: Compile Firmware
+      - name: Compile Siflower Firmware
         id: compile
         run: |
           cd openwrt-18.06
-          echo "Memulai proses kompilasi..."
-          # Jalankan multi-core, jika gagal fallback ke single-core verbose untuk log detail
-          make -j$(nproc) || make -j1 V=s
+          echo "Memulai proses kompilasi Siflower SF19A28 OpenWrt..."
+          # Menggunakan Siflower build script (make.sh)
+          if [ -f "./make.sh" ]; then
+            chmod +x ./make.sh
+            echo "Menjalankan Siflower make.sh ..."
+            ./make.sh  || make -j$(nproc) || make -j1 V=s
+          else
+            echo "make.sh tidak ditemukan, fallback ke standard make defconfig..."
+            make defconfig
+            make -j$(nproc) || make -j1 V=s
+          fi
 
       - name: Prepare Artifacts
         if: always()
         run: |
           cd openwrt-18.06
           mkdir -p ../output_firmware
-          # Salin file binary firmware hasil kompilasi
-          find bin/targets/ -type f -name "*.*" -exec cp -v {} ../output_firmware/ \; || true
-          # Salin file config yang digunakan
-          cp -v .config ../output_firmware/build_used.config || true
+          # Kumpulkan binary dari direktori target Siflower maupun direktori root
+          find bin/targets/siflower/ -type f \( -name "*.bin" -o -name "*.img" -o -name "*.tar.gz" \) -exec cp -v {} ../output_firmware/ \; || true
+          find bin/targets/ -type f \( -name "*.bin" -o -name "*.img" \) -exec cp -v {} ../output_firmware/ \; || true
+          find . -maxdepth 2 -type f -name "*siflower*.bin" -exec cp -v {} ../output_firmware/ \; || true
+          # Salin file config yang digunakan untuk referensi debugging
+          cp -v .config ../output_firmware/siflower_build.config || true
 
       - name: Upload Firmware Artifacts
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: tenda-ac8v5-openwrt-firmware
+          name: tenda-ac8v5-siflower-firmware
           path: output_firmware/
           retention-days: 14
