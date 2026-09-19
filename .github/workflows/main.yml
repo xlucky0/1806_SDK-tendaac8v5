@@ -29,18 +29,11 @@ jobs:
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
           gcc --version
 
-      - name: Locate SDK Directory & Setup Config
+      - name: Setup Configuration (.config)
         run: |
-          # Cari folder yang memiliki file Makefile (SDK OpenWrt)
-          SDK_DIR=$(find . -maxdepth 2 -name "Makefile" -exec dirname {} \;)
-          if [ "$SDK_DIR" = "." ] || [ -z "$SDK_DIR" ]; then
-            echo "Menggunakan root direktori"
-          else
-            echo "Masuk ke folder SDK: $SDK_DIR"
-            cd "$SDK_DIR"
-          fi
+          # Masuk secara spesifik ke folder openwrt-18.06
+          cd openwrt-18.06
 
-          # Buat file .config dan jalankan defconfig di dalam folder SDK
           cat << 'EOF' > .config
           CONFIG_TARGET_siflower=y
           CONFIG_TARGET_siflower_sf19a28=y
@@ -54,10 +47,7 @@ jobs:
 
       - name: Start Compilation
         run: |
-          SDK_DIR=$(find . -maxdepth 2 -name "Makefile" -exec dirname {} \;)
-          if [ "$SDK_DIR" != "." ] && [ -n "$SDK_DIR" ]; then
-            cd "$SDK_DIR"
-          fi
+          cd openwrt-18.06
           make -j$(nproc) || make -j1 V=s
 
       - name: Upload Firmware Result
@@ -65,5 +55,5 @@ jobs:
         with:
           name: Tenda-AC8v5-OpenWrt
           path: |
-            **/bin/targets/siflower/sf19a28/*
-            **/bin/packages/*/*/
+            openwrt-18.06/bin/targets/siflower/sf19a28/*
+            openwrt-18.06/bin/packages/*/*/
