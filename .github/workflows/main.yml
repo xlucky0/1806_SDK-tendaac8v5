@@ -7,6 +7,7 @@ on:
       - main
       - master
       - release2.0.0
+      - fix/tenda-ac8v5-hardware-layout
 
 permissions:
   contents: read
@@ -40,7 +41,6 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-
           SDK_PATH="$(
             find . \
               -type f \
@@ -53,14 +53,12 @@ jobs:
 
           if [[ -z "${SDK_PATH}" || ! -f "${SDK_PATH}/rules.mk" ]]; then
             echo "::error::OpenWrt rules.mk tidak ditemukan"
-            find . -maxdepth 4 -name rules.mk -print || true
             exit 1
           fi
 
           SDK_PATH="${SDK_PATH#./}"
           [[ -n "${SDK_PATH}" ]] || SDK_PATH="."
           echo "sdk_dir=${SDK_PATH}" >> "${GITHUB_OUTPUT}"
-          echo "OpenWrt SDK: ${SDK_PATH}"
 
           if [[ -f .config && "${SDK_PATH}" != "." ]]; then
             cp -f .config "${SDK_PATH}/.config"
@@ -70,44 +68,16 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            gcc-12 g++-12 \
-            make \
-            binutils \
-            libc6-dev \
-            flex bison \
-            gawk gettext \
-            git \
-            libncurses5-dev libncurses-dev \
-            libssl-dev \
-            python3 python3-setuptools \
-            rsync unzip zip \
-            zlib1g-dev \
-            file wget curl ca-certificates \
-            perl libthread-queue-perl
-
+            build-essential gcc-12 g++-12 make binutils libc6-dev \
+            flex bison gawk gettext git libncurses5-dev libncurses-dev \
+            libssl-dev python3 python3-setuptools rsync unzip zip \
+            zlib1g-dev file wget curl ca-certificates perl libthread-queue-perl
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 120
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 120
           sudo update-alternatives --set gcc /usr/bin/gcc-12
           sudo update-alternatives --set g++ /usr/bin/g++-12
-          hash -r
-
-          command -v gcc
-          command -v g++
-          gcc --version
-          g++ --version
-
-      - name: Verify compiler
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          printf 'int main(void){return 0;}\n' | gcc -x c -o /tmp/test-c -
-          printf 'int main(){return 0;}\n' | g++ -x c++ -o /tmp/test-cpp -
-          /tmp/test-c
-          /tmp/test-cpp
 
       - name: Prepare OpenWrt tree
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
@@ -120,8 +90,6 @@ jobs:
           if [[ -f feeds.conf.default ]]; then
             cp -f feeds.conf.default feeds.conf
           fi
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Update and install feeds
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
@@ -141,10 +109,9 @@ jobs:
             exit 1
           fi
 
-          grep -q '^CONFIG_TARGET_siflower_sf19a2890_DEVICE_tenda_ac8-v5=y$' .config || {
-            echo "::error::Target Tenda AC8 v5 tidak ditemukan di .config"
-            exit 1
-          }
+          grep -q '^CONFIG_TARGET_siflower_sf19a2890_DEVICE_tenda_ac8-v5=y$' .config
+          grep -q '^CONFIG_TARGET_siflower_sf19a2890=y$' .config
+          grep -q '^CONFIG_PACKAGE_kmod-siflower-wifi=y$' .config
 
       - name: Build OpenWrt
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
@@ -157,17 +124,24 @@ jobs:
           find dl -type f -size -1024c -print -delete || true
           make -j2 FORCE=1 V=s 2>&1 | tee "${GITHUB_WORKSPACE}/build.log"
 
-      - name: Verify firmware output
+      - name: Validate firmware artifacts
         working-directory: ${{ steps.sdk.outputs.sdk_dir }}
         shell: bash
         run: |
           set -Eeuo pipefail
-          target_files="$(find bin/targets -type f 2>/dev/null | wc -l)"
-          [[ "${target_files}" -gt 0 ]] || {
-            echo "::error::Firmware tidak dihasilkan."
+          mapfile -t files < <(find bin/targets -type f -size +0c -print)
+          [[ "${#files[@]}" -gt 0 ]] || {
+            echo "::error::Firmware tidak dihasilkan"
             exit 1
           }
-          find bin/targets -type f -print
+
+          for file in "${files[@]}"; do
+            size=$(stat -c '%s' "$file")
+            if [[ "$size" -gt $((0x740000)) ]]; then
+              echo "::error::$file exceeds the AC8 v5 firmware region"
+              exit 1
+            fi
+          done
 
       - name: Upload firmware artifacts
         if: success()
